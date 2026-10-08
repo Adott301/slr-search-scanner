@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "SLR Search Scanner",
+  "version": "1.0.0",
+  "description": "Scan and filter ACM search results for Systematic Literature Review",
+  "author": "Nguyen Tien Dat - SWT301 RBL Group04",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "clipboardWrite",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://dl.acm.org/*",
+    "https://ieeexplore.ieee.org/*",
+    "https://scholar.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SLR Search Scanner",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://dl.acm.org/action/doSearch*",
+        "https://dl.acm.org/doi/*",
+        "https://ieeexplore.ieee.org/search/*",
+        "https://scholar.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

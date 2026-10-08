@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SLR Search Scanner</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- ===== HEADER ===== -->
+  <header class="header">
+    <div class="header-icon">🔬</div>
+    <div class="header-info">
+      <h1>SLR Search Scanner</h1>
+      <span class="header-sub">SWT301 · RBL Group04 · FA26</span>
+    </div>
+  </header>
+
+  <!-- ===== TABS ===== -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="tab-single">📄 Single Paper</button>
+    <button class="tab-btn" data-tab="tab-scan">🔍 Search Scanner</button>
+    <button class="tab-btn" data-tab="tab-history">💾 History</button>
+  </div>
+
+  <!-- ====================================================
+       TAB 1: SINGLE PAPER
+  ===================================================== -->
+  <div id="tab-single" class="tab-content active">
+    <div class="section">
+      <p class="hint">Mở trang chi tiết paper trên ACM, sau đó bấm Extract.</p>
+      <button id="extract-btn" class="btn btn-primary btn-full">🔍 Extract từ trang hiện tại</button>
+      <div id="extract-status" class="status-msg hidden"></div>
+    </div>
+
+    <!-- Kết quả metadata -->
+    <div id="single-result" class="section hidden">
+      <h2 class="section-title">📋 Kết quả</h2>
+
+      <div class="field-group">
+        <label>Title</label>
+        <textarea id="f-title" rows="2" readonly></textarea>
+      </div>
+      <div class="field-group">
+        <label>Authors</label>
+        <input type="text" id="f-authors" readonly />
+      </div>
+      <div class="field-row">
+        <div class="field-group">
+          <label>Year</label>
+          <input type="text" id="f-year" readonly />
+        </div>
+        <div class="field-group">
+          <label>Source</label>
+          <input type="text" id="f-source" readonly />
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Venue</label>
+        <input type="text" id="f-venue" readonly />
+      </div>
+      <div class="field-group">
+        <label>DOI</label>
+        <input type="text" id="f-doi" readonly />
+      </div>
+      <div class="field-group">
+        <label>URL</label>
+        <input type="text" id="f-url" readonly />
+      </div>
+      <div class="field-group">
+        <label>Abstract</label>
+        <textarea id="f-abstract" rows="3" readonly></textarea>
+      </div>
+
+      <!-- Score -->
+      <div class="score-box" id="single-score-box">
+        <div class="score-value" id="single-score">—</div>
+        <div class="score-decision" id="single-decision">—</div>
+        <div class="score-criteria" id="single-criteria"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="action-group">
+        <button id="copy-csv-btn" class="btn btn-success">📋 Copy CSV</button>
+        <button id="copy-md-btn" class="btn btn-info">📝 Copy Markdown</button>
+        <button id="save-btn" class="btn btn-warning">💾 Lưu vào Storage</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ====================================================
+       TAB 2: SEARCH SCANNER
+  ===================================================== -->
+  <div id="tab-scan" class="tab-content hidden">
+
+    <!-- Search String -->
+    <div class="section">
+      <label class="field-label">Search String (để tham khảo)</label>
+      <textarea id="search-string" rows="2">("Defects4J" OR "Java test generation") AND ("LLM" OR "ChatGPT" OR "Claude") AND ("JUnit" OR "unit test")</textarea>
+      <p class="hint">Mở trang search ACM với query trên, sau đó bấm Scan.<br>Tool sẽ tự động chuyển trang để quét HẾT kết quả.</p>
+      <button id="scan-btn" class="btn btn-primary btn-full">🚀 Scan All Results (All Pages)</button>
+    </div>
+
+    <!-- Progress – real-time pagination tracker -->
+    <div id="scan-progress-wrap" class="section hidden">
+      <div class="progress-label" id="progress-label">Đang khởi động...</div>
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progress-bar" style="width:0%"></div>
+      </div>
+      <div class="progress-sub" id="progress-sub">Đang chuẩn bị scan toàn bộ trang...</div>
+      <div class="progress-page-detail" id="progress-page-detail"></div>
+    </div>
+
+    <!-- Filters -->
+    <div id="filter-section" class="section hidden">
+      <h2 class="section-title">🎛️ Bộ lọc</h2>
+
+      <!-- Quick filter: chỉ hiển thị INCLUDE -->
+      <div class="filter-row-checkbox">
+        <label class="checkbox-label">
+          <input type="checkbox" id="only-include-checkbox" checked />
+          ⚡ Chỉ hiển thị INCLUDE (score ≥ 70)
+        </label>
+      </div>
+
+      <div class="filter-grid">
+        <div class="field-group">
+          <label>Min Year</label>
+          <input type="number" id="filter-min-year" value="2018" min="1990" max="2030" />
+        </div>
+        <div class="field-group">
+          <label>Max Year</label>
+          <input type="number" id="filter-max-year" value="2030" min="1990" max="2035" />
+        </div>
+        <div class="field-group">
+          <label>Min Score</label>
+          <input type="number" id="filter-min-score" value="70" min="0" max="100" />
+        </div>
+        <div class="field-group">
+          <label>Decision</label>
+          <select id="filter-decision">
+            <option value="ALL">All</option>
+            <option value="INCLUDE">INCLUDE only</option>
+            <option value="EXCLUDE">EXCLUDE only</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-group">
+        <label>Keyword filter (title)</label>
+        <input type="text" id="filter-keyword" placeholder="e.g. JUnit, ChatGPT..." />
+      </div>
+      <button id="apply-filter-btn" class="btn btn-secondary btn-full">🔄 Áp dụng bộ lọc</button>
+    </div>
+
+    <!-- Statistics -->
+    <div id="stats-box" class="stats-box hidden">
+      <span id="stat-total">Tổng: 0</span>
+      <span class="stat-sep">|</span>
+      <span id="stat-include" class="include">INCLUDE: 0</span>
+      <span class="stat-sep">|</span>
+      <span id="stat-exclude" class="exclude">EXCLUDE: 0</span>
+      <span class="stat-sep">|</span>
+      <span id="stat-selected">Đã chọn: 0</span>
+    </div>
+
+    <!-- Action buttons for table -->
+    <div id="table-actions" class="action-group hidden">
+      <button id="select-all-include-btn" class="btn btn-success">✅ Select All INCLUDE</button>
+      <button id="deselect-all-btn" class="btn btn-secondary">❌ Deselect All</button>
+      <button id="export-selected-btn" class="btn btn-primary">📥 Export Selected CSV</button>
+      <button id="export-all-btn" class="btn btn-info">📥 Export All CSV</button>
+      <button id="copy-all-links-btn" class="btn btn-info">🔗 Copy tất cả links</button>
+      <button id="copy-detailed-list-btn" class="btn btn-success">📋 Copy danh sách chi tiết</button>
+      <button id="clear-results-btn" class="btn btn-danger">🗑️ Clear Results</button>
+    </div>
+
+    <!-- View Toggle Bar -->
+    <div id="view-toggle-bar" class="view-toggle-bar hidden">
+      <button id="view-table-btn" class="view-btn active">📊 Bảng</button>
+      <button id="view-list-btn" class="view-btn">📋 Danh sách chi tiết</button>
+    </div>
+
+    <!-- View: Table -->
+    <div id="view-table-container" class="hidden">
+      <div class="table-scroll">
+        <table id="results-table">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="master-check" title="Select/Deselect All" /></th>
+              <th class="col-id sortable" data-col="id">ID ▼</th>
+              <th class="col-title sortable" data-col="title">Title ▼</th>
+              <th class="col-authors">Authors</th>
+              <th class="col-year sortable" data-col="year">Year ▼</th>
+              <th class="col-doi">DOI</th>
+              <th class="col-score sortable" data-col="score">Score ▼</th>
+              <th class="col-decision sortable" data-col="decision">Decision ▼</th>
+            </tr>
+          </thead>
+          <tbody id="results-tbody">
+            <!-- Rows injected by popup.js -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- View: Danh sách chi tiết -->
+    <div id="view-list-container" class="hidden">
+      <div id="detailed-list"></div>
+    </div>
+
+  </div>
+
+  <!-- ====================================================
+       TAB 3: HISTORY
+  ===================================================== -->
+  <div id="tab-history" class="tab-content hidden">
+    <div class="section">
+      <h2 class="section-title">💾 Lịch sử đã lưu</h2>
+      <div class="action-group">
+        <button id="export-history-btn" class="btn btn-primary">📥 Export All History CSV</button>
+        <button id="clear-history-btn" class="btn btn-danger">🗑️ Clear History</button>
+      </div>
+      <div id="history-stats" class="stats-box">Chưa có paper nào được lưu.</div>
+      <div id="history-list" class="history-list">
+        <!-- Rendered by popup.js -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== FOOTER ===== -->
+  <footer class="footer">
+    SWT301 · RBL Group04 · FA26 &nbsp;|&nbsp; v1.0.0
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
