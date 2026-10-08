@@ -1,4 +1,4 @@
-﻿// content.js - SLR Search Scanner Content Script
+// content.js - SLR Search Scanner Content Script
 // Author: Nguyen Tien Dat - SWT301 RBL Group04
 // Chạy trên các trang ACM, IEEE, Google Scholar
 
@@ -17,12 +17,158 @@ console.log('[SLR Scanner] Content script loaded!');
 // SECTION 1: EXTRACT METADATA TỪ MỘT ELEMENT KẾT QUẢ
 // ============================================================
 
+/** Xác định database dựa trên hostname của trang hiện tại */
+function getSource() {
+  const h = location.hostname;
+  if (h === 'dl.acm.org') return 'ACM';
+  if (h === 'ieeexplore.ieee.org') return 'IEEE';
+  if (h === 'scholar.google.com') return 'SCHOLAR';
+  return null;
+}
+
+const DOI_REGEX = /10\.\d{4,}\/[^\s?#]+/;
+
+/** Chuyển href tương đối -> tuyệt đối */
+function absUrl(href) {
+  if (!href) return '';
+  try { return new URL(href, location.origin).href; } catch { return ''; }
+}
+
+const collapseWs = s => (s || '').replace(/\s+/g, ' ').trim();
+
 /**
- * Trích xuất metadata từ một DOM element đại diện cho một kết quả tìm kiếm ACM.
+ * Trích xuất metadata từ một DOM element kết quả tìm kiếm.
+ * Tự chọn parser theo database (ACM / IEEE Xplore / Google Scholar).
  * @param {Element} element - DOM element của một kết quả tìm kiếm
  * @returns {Object} metadata object chứa thông tin bài báo
  */
 function extractMetadataFromSearchResult(element) {
+  switch (getSource()) {
+    case 'ACM':     return extractFromACM(element);
+    case 'IEEE':    return extractFromIEEE(element);
+    case 'SCHOLAR': return extractFromGoogleScholar(element);
+    default:        return extractGeneric(element);
+  }
+}
+
+function errorMetadata(source) {
+  return {
+    title: 'Error extracting', authors: '', year: '', venue: '',
+    doi: '', url: '', abstract: '', source
+  };
+}
+
+// ---------- IEEE Xplore ----------
+function extractFromIEEE(element) {
+  try {
+    // Link tiêu đề trỏ tới /document/<id> -> dùng làm URL (KHÔNG dùng URL trang search,
+    // vì paperKey khử trùng theo URL, dùng chung URL sẽ gộp mọi paper làm một).
+    const titleLink = element.querySelector(
+      'h3.result-item-title a, h2.document-title a, a[href*="/document/"]'
+    );
+    const titleEl = titleLink ||
+      element.querySelector('h2.document-title, .document-title span, h3 a, h3');
+    const title = titleEl ? collapseWs(titleEl.textContent) : 'Unknown Title';
+    const url = titleLink ? absUrl(titleLink.getAttribute('href')) : '';
+
+    // Authors
+    let authorEls = element.querySelectorAll('.author a span, .authors-info .author-name');
+    if (authorEls.length === 0) authorEls = element.querySelectorAll('.author');
+    const names = Array.from(authorEls)
+      .map(el => collapseWs(el.textContent).replace(/[;,\s]+$/, ''))
+      .filter(Boolean);
+    const authors = names.length ? Array.from(new Set(names)).join('; ') : 'Unknown';
+
+    // Year
+    const yearEl = element.querySelector('.doc-abstract-pubdate, .publication-year');
+    const infoEl = element.querySelector('.publisher-info-container, .description');
+    const yearMatch =
+      (yearEl && yearEl.textContent.match(/\b((?:19|20)\d{2})\b/)) ||
+      (infoEl && infoEl.textContent.match(/Year:\s*((?:19|20)\d{2})/i)) ||
+      element.textContent.match(/\b((?:19|20)\d{2})\b/);
+    const year = yearMatch ? yearMatch[1] : 'Unknown';
+
+    // Venue
+    const venueEl = element.querySelector(
+      '.description a[href*="/xpl/"], .doc-abstract-conference, .publication-title'
+    );
+    const venue = venueEl ? collapseWs(venueEl.textContent) : 'Unknown';
+
+    // DOI (trang search IEEE thường không có -> để rỗng nếu không tìm thấy)
+    const doiText = Array.from(
+      element.querySelectorAll('a[href*="doi.org"], .doc-abstract-doi')
+    ).map(el => (el.getAttribute('href') || '') + ' ' + el.textContent).join(' ');
+    const doiMatch = doiText.match(DOI_REGEX);
+    const doi = doiMatch ? doiMatch[0] : '';
+
+    // Abstract (chỉ có nếu đã được render trong DOM)
+    const abstractEl = element.querySelector('.abstract-text, .doc-abstract, .js-displayer-content');
+    const abstract = abstractEl ? collapseWs(abstractEl.textContent).replace(/^Abstract:?\s*/i, '') : '';
+
+    return { title, authors, year, venue, doi, url, abstract, source: 'IEEE' };
+  } catch (error) {
+    console.error('[SLR Scanner] IEEE extract error:', error);
+    return errorMetadata('IEEE');
+  }
+}
+
+// ---------- Google Scholar ----------
+const SCHOLAR_TITLE_PREFIX = /^\s*\[(?:PDF|HTML|BOOK|B|CITATION|C)\]\s*/i;
+
+/**
+ * Tách dòng .gs_a: "Tác giả A, Tác giả B - Venue, 2023 - publisher.com"
+ * Dấu phân cách là " - " (có khoảng trắng, có thể là nbsp) nên tên có dấu gạch
+ * nối (vd. "Smith-Jones") không bị cắt nhầm.
+ */
+function parseScholarMeta(text) {
+  const parts = (text || '').split(/[\s\u00a0]+-[\s\u00a0]+/).map(s => s.trim());
+  const authors = (parts[0] || '')
+    .split(',').map(s => s.replace(/…$/, '').trim()).filter(Boolean).join('; ');
+  const yearMatch = (parts[1] || text || '').match(/\b((?:19|20)\d{2})\b/);
+  const venue = (parts[1] || '')
+    .replace(/,?\s*(?:19|20)\d{2}\s*$/, '').replace(/…$/, '').trim();
+  return {
+    authors: authors || 'Unknown',
+    year: yearMatch ? yearMatch[1] : 'Unknown',
+    venue: venue && !/^(?:19|20)\d{2}$/.test(venue) ? venue : 'Unknown'
+  };
+}
+
+function extractFromGoogleScholar(element) {
+  try {
+    const titleEl = element.querySelector('.gs_rt');
+    const linkEl = titleEl ? titleEl.querySelector('a') : null;
+    const rawTitle = titleEl ? collapseWs((linkEl || titleEl).textContent) : '';
+    const title = rawTitle.replace(SCHOLAR_TITLE_PREFIX, '') || 'Unknown Title';
+
+    const metaEl = element.querySelector('.gs_a');
+    const meta = parseScholarMeta(collapseWs(metaEl ? metaEl.textContent : ''));
+
+    const href = linkEl ? linkEl.getAttribute('href') : '';
+    const url = href && !href.startsWith('/scholar') ? absUrl(href) : '';
+    const doiMatch = url.match(DOI_REGEX);
+
+    return {
+      title, authors: meta.authors, year: meta.year, venue: meta.venue,
+      doi: doiMatch ? doiMatch[0] : '', url, abstract: '', source: 'Google Scholar'
+    };
+  } catch (error) {
+    console.error('[SLR Scanner] Scholar extract error:', error);
+    return errorMetadata('Google Scholar');
+  }
+}
+
+// ---------- Fallback ----------
+function extractGeneric(element) {
+  const el = element.querySelector('h1, h2, h3, .title');
+  return {
+    title: el ? collapseWs(el.textContent) : 'Unknown Title',
+    authors: '', year: '', venue: '', doi: '', url: '', abstract: '', source: 'Unknown'
+  };
+}
+
+// ---------- ACM (logic gốc, giữ nguyên) ----------
+function extractFromACM(element) {
   try {
     // --- TITLE ---
     const titleEl =
@@ -249,21 +395,30 @@ async function scrollToBottom() {
 }
 
 /**
- * Tìm và click nút "Next page" của ACM.
+ * Tìm và click nút "Next page" theo database hiện tại.
+ * Lưu ý: luồng scan chính dùng điều hướng bằng URL (xem runScanStep) vì ổn định hơn;
+ * hàm này là phương án click thủ công khi cần.
  * @returns {boolean} true nếu tìm thấy và click được
  */
 async function goToNextPage() {
-  const NEXT_SELECTORS = [
-    'a[aria-label="Next Page"]',
-    'a[aria-label="Next"]',
-    'button[aria-label="Next Page"]',
-    'button[aria-label="Next"]',
-    '.pagination__btn--next',
-    'a.pagination__btn--next',
-    'li.page-item.active + li.page-item a',
-    '[class*="pagination"] [class*="next"]:not([disabled])',
-    'a[rel="next"]',
-  ];
+  const NEXT_BY_SOURCE = {
+    ACM: [
+      'a[aria-label="Next Page"]', 'a[aria-label="Next"]',
+      'button[aria-label="Next Page"]', 'button[aria-label="Next"]',
+      '.pagination__btn--next', 'a.pagination__btn--next',
+      'li.page-item.active + li.page-item a',
+      '[class*="pagination"] [class*="next"]:not([disabled])',
+      'a[rel="next"]'
+    ],
+    IEEE: [
+      'a[aria-label="Next Page"]', 'button[aria-label="Next Page"]',
+      'li.next-btn button', '.next-page-btn', 'button[class*="next"]'
+    ],
+    SCHOLAR: [
+      'button[aria-label="Next"]', '.gs_btnPR', '#gs_n a:last-child'
+    ]
+  };
+  const NEXT_SELECTORS = NEXT_BY_SOURCE[getSource()] || [];
   for (const sel of NEXT_SELECTORS) {
     const btn = document.querySelector(sel);
     if (btn && !btn.disabled && !btn.closest('[disabled]') &&
@@ -303,55 +458,129 @@ async function updateScanProgress(progress) {
 // ============================================================
 // SECTION 4: SCAN SEARCH RESULTS – RESUMABLE PAGINATION
 // ============================================================
-// Kiến trúc: mỗi trang ACM là một lần điều hướng THẬT => content script bị
+// Kiến trúc: mỗi trang kết quả là một lần điều hướng THẬT => content script bị
 // huỷ và nạp lại ở mỗi trang. Vì vậy KHÔNG giữ state trong biến JS mà lưu vào
 // chrome.storage.local (key 'scanState'). Mỗi lần content script nạp lại sẽ
 // tự đọc state và làm tiếp. Khi xong ghi 'scanResults' để popup nhận.
 
-const PER_PAGE  = 20;   // số kết quả / trang
 const MAX_PAGES = 200;  // chốt chặn an toàn
 
-function getStartPageFromUrl() {
-  const v = new URL(location.href).searchParams.get('startPage');
-  return v ? (parseInt(v, 10) || 0) : 0;
-}
+/**
+ * Cấu hình theo database. Mỗi database có cách phân trang riêng trên URL:
+ *   ACM:     startPage (0-based) + pageSize
+ *   IEEE:    pageNumber (1-based); rowsPerPage lấy từ URL, mặc định 25
+ *   Scholar: start (offset = trang × 10); Google chỉ cho xem tối đa 1000 kết quả
+ */
+const SOURCES = {
+  ACM: {
+    label: 'ACM',
+    maxPages: MAX_PAGES,
+    delay: [600, 1200],
+    scroll: true,
+    isSearchPage: () => location.pathname.includes('/action/doSearch'),
+    getPerPage: () => 20,
+    getPageIndex: (u) => parseInt(u.searchParams.get('startPage'), 10) || 0,
+    setPage: (u, page, perPage) => {
+      u.searchParams.set('startPage', String(page));
+      u.searchParams.set('pageSize', String(perPage));
+    },
+    resultSelectors: [
+      '.issue-item', 'li.search__item', '.search__item',
+      'article.issue-item', '[class*="issue-item"]'
+    ],
+    countRegex: /([\d,]+)/,
+    bodyCountRegexes: [/([\d,]+)\s+results?\b/i]
+  },
+  IEEE: {
+    label: 'IEEE',
+    maxPages: MAX_PAGES,
+    delay: [1500, 2500],
+    scroll: true,
+    isSearchPage: () => location.pathname.includes('/search/searchresult.jsp'),
+    getPerPage: (u) => parseInt(u.searchParams.get('rowsPerPage'), 10) || 25,
+    getPageIndex: (u) => (parseInt(u.searchParams.get('pageNumber'), 10) || 1) - 1,
+    setPage: (u, page) => u.searchParams.set('pageNumber', String(page + 1)),
+    resultSelectors: ['xpl-results-item', '.List-results-items', 'div.result-item'],
+    countRegex: /\bof\s+([\d,]+)/i,
+    bodyCountRegexes: [
+      /Showing\s+[\d,]+\s*[-–]\s*[\d,]+\s+of\s+([\d,]+)/i,
+      /([\d,]+)\s+results?\s+for\b/i
+    ]
+  },
+  SCHOLAR: {
+    label: 'Google Scholar',
+    maxPages: 100,                 // 1000 kết quả / 10 mỗi trang
+    delay: [3000, 6000],           // chậm hơn để tránh CAPTCHA
+    scroll: false,
+    isSearchPage: () => location.pathname === '/scholar',
+    getPerPage: () => 10,
+    getPageIndex: (u, perPage) =>
+      Math.floor((parseInt(u.searchParams.get('start'), 10) || 0) / perPage),
+    setPage: (u, page, perPage) => u.searchParams.set('start', String(page * perPage)),
+    resultSelectors: ['.gs_r.gs_or', '#gs_res_ccl_mid .gs_r', 'div.gs_ri'],
+    countRegex: /([\d,]+)\s+results?\b/i,
+    bodyCountRegexes: [/([\d,]+)\s+results?\b/i]
+  }
+};
+
+const getCfg = () => SOURCES[getSource()] || null;
 
 /** URL của trang kết quả thứ `page` (0-based), giữ nguyên query search */
-function buildPageUrl(page) {
+function buildPageUrl(page, perPage) {
   const u = new URL(location.href);
-  u.searchParams.set('startPage', String(page));
-  u.searchParams.set('pageSize', String(PER_PAGE));
+  getCfg().setPage(u, page, perPage);
   return u.toString();
 }
 
-function detectTotalResults() {
-  const SELECTORS = [
-    '.result__count', '.search__item-count', '.results-count',
-    '[class*="result-count"]', '.items-results', 'span[data-total]', 'h2.result__title'
-  ];
-  for (const sel of SELECTORS) {
-    const el = document.querySelector(sel);
-    if (el) {
-      const txt = el.textContent || el.getAttribute('data-total') || '';
-      const m = txt.replace(/,/g, '').match(/(\d+)/);
-      if (m) return parseInt(m[1], 10);
-    }
-  }
-  const m = (document.body.innerText || '').match(/([\d,]+)\s+results?\b/i);
-  return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
-}
-
-const RESULT_SELECTORS = [
-  '.issue-item', 'li.search__item', '.search__item',
-  'article.issue-item', '[class*="issue-item"]'
+const COUNT_SELECTORS = [
+  // ACM
+  '.result__count', '.search__item-count', '.results-count',
+  // IEEE
+  '.results-actions-selectall-text', '.Dashboard-header', '.result-count',
+  // Google Scholar
+  '#gs_ab_md .gs_ab_mdw', '.gs_ab_mdw',
+  // Generic
+  '[class*="result-count"]', '.items-results', 'span[data-total]', 'h2.result__title'
 ];
 
+const toInt = s => parseInt(String(s).replace(/,/g, ''), 10);
+
+/** Lấy tổng số kết quả từ text, theo regex của database hiện tại */
+function parseTotalCount(text, regex) {
+  const m = (text || '').match(regex);
+  return m ? toInt(m[1]) : 0;
+}
+
+function detectTotalResults() {
+  const cfg = getCfg();
+  for (const sel of COUNT_SELECTORS) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    const n = parseTotalCount(el.textContent || el.getAttribute('data-total') || '', cfg.countRegex);
+    if (n > 0) return n;
+  }
+  const body = document.body.innerText || '';
+  for (const re of cfg.bodyCountRegexes) {
+    const n = parseTotalCount(body, re);
+    if (n > 0) return n;
+  }
+  return 0;
+}
+
 function findResultElements() {
-  for (const sel of RESULT_SELECTORS) {
+  const cfg = getCfg();
+  for (const sel of (cfg ? cfg.resultSelectors : [])) {
     const found = document.querySelectorAll(sel);
     if (found.length > 0) return Array.from(found);
   }
   return Array.from(document.querySelectorAll('article'));
+}
+
+/** Google Scholar chặn bằng CAPTCHA khi truy cập nhiều trang liên tiếp */
+function isBlockedPage() {
+  if (getSource() !== 'SCHOLAR') return false;
+  if (document.querySelector('#gs_captcha_ccl, #recaptcha, iframe[src*="recaptcha"], form#captcha-form')) return true;
+  return /unusual traffic|not a robot|automated queries/i.test(document.body.innerText || '');
 }
 
 /** Đợi kết quả xuất hiện trong DOM (tối đa ~15s) */
@@ -401,14 +630,20 @@ async function runScanStep() {
   try {
     state = await getScanState();
     if (!state || !state.active) return;
-    if (!location.href.includes('/action/doSearch')) return;
+    const srcKey = getSource();
+    const cfg = getCfg();
+    if (!cfg || !cfg.isSearchPage()) return;
+    // Không nối tiếp scan của database khác
+    if (state.source && state.source !== srcKey) return;
+
+    const perPage = state.perPage || cfg.getPerPage(new URL(location.href));
 
     // Luôn quét từ trang 0; nếu URL không khớp state.page thì điều hướng đúng chỗ
-    if (getStartPageFromUrl() !== state.page) {
+    if (cfg.getPageIndex(new URL(location.href), perPage) !== state.page) {
       state.redirects = (state.redirects || 0) + 1;
       if (state.redirects > 3) throw new Error('Không thể điều hướng tới trang ' + (state.page + 1));
       await saveScanState(state);
-      location.href = buildPageUrl(state.page);
+      location.href = buildPageUrl(state.page, perPage);
       return;
     }
     state.redirects = 0;
@@ -420,11 +655,23 @@ async function runScanStep() {
     });
 
     const ok = await waitForResults();
-    if (ok) await scrollToBottom();
+
+    // CAPTCHA (Scholar): giữ nguyên state, đợi người dùng giải. Sau khi giải, trang tải
+    // lại -> content script nạp lại -> tự động quét tiếp.
+    if (!ok && isBlockedPage()) {
+      console.warn('[SLR Scanner] Bị chặn bởi CAPTCHA, đang chờ người dùng xử lý.');
+      await updateScanProgress({
+        currentPage: page + 1, totalPages: state.totalPages || page + 1,
+        papersFound: state.papers.length, status: 'blocked'
+      });
+      return;
+    }
+    if (ok && cfg.scroll) await scrollToBottom();
 
     if (page === 0) {
       state.totalResults = detectTotalResults();
-      state.totalPages   = state.totalResults > 0 ? Math.ceil(state.totalResults / PER_PAGE) : 0;
+      state.totalPages   = state.totalResults > 0
+        ? Math.min(Math.ceil(state.totalResults / perPage), cfg.maxPages) : 0;
       console.log(`[SLR Scanner] ${state.totalResults} results → ${state.totalPages} pages`);
     }
 
@@ -446,7 +693,7 @@ async function runScanStep() {
       pagePapers.length === 0 || added === 0 ||
       (totalPages > 0 && page + 1 >= totalPages) ||
       (state.totalResults > 0 && state.papers.length >= state.totalResults) ||
-      page + 1 >= MAX_PAGES;
+      page + 1 >= cfg.maxPages;
 
     await updateScanProgress({
       currentPage: page + 1, totalPages: totalPages || page + 1,
@@ -458,8 +705,9 @@ async function runScanStep() {
     } else {
       state.page = page + 1;
       await saveScanState(state);            // lưu TRƯỚC khi điều hướng
-      await sleep(600 + Math.random() * 600); // nhẹ tay với server ACM
-      location.href = buildPageUrl(state.page);
+      const [lo, hi] = cfg.delay;
+      await sleep(lo + Math.random() * (hi - lo)); // nhẹ tay với server
+      location.href = buildPageUrl(state.page, perPage);
     }
   } catch (err) {
     console.error('[SLR Scanner] Scan step error:', err);
@@ -601,13 +849,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // scanSearch: Quét toàn bộ kết quả (multi-page)
         case 'scanSearch': {
-          if (!location.href.includes('/action/doSearch')) {
-            sendResponse({ success: false, error: 'Not a search page. Please open an ACM search results page first.' });
+          const srcKey = getSource();
+          const cfg = getCfg();
+          if (!cfg || !cfg.isSearchPage()) {
+            sendResponse({ success: false, error: 'Not a search page. Please open an ACM, IEEE Xplore or Google Scholar search results page first.' });
             break;
           }
           await chrome.storage.local.remove(['scanResults', 'scanProgress']);
           await saveScanState({
-            active: true, page: 0, papers: [],
+            active: true, source: srcKey,
+            perPage: cfg.getPerPage(new URL(location.href)),
+            page: 0, papers: [],
             totalResults: 0, totalPages: 0, redirects: 0,
             startedAt: Date.now(), searchUrl: location.href
           });
@@ -645,7 +897,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ============================================================
 // SECTION 7: AUTO-RESUME sau mỗi lần điều hướng trang
 // ============================================================
-if (location.href.includes('/action/doSearch')) {
+if (getCfg() && getCfg().isSearchPage()) {
   setTimeout(() => { runScanStep(); }, 500);
 }
 
