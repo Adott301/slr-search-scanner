@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SLR Search Scanner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scan and filter ACM search results for Systematic Literature Review",
   "author": "Nguyen Tien Dat - SWT301 RBL Group04",
   "permissions": [
@@ -14,7 +14,8 @@
   "host_permissions": [
     "https://dl.acm.org/*",
     "https://ieeexplore.ieee.org/*",
-    "https://scholar.google.com/*"
+    "https://scholar.google.com/*",
+    "https://serpapi.com/*"
   ],
   "action": {
     "default_popup": "popup.html",
