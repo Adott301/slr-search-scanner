@@ -1,11 +1,15 @@
 // popup.js - SLR Search Scanner Popup Logic
 // Author: Nguyen Tien Dat - SWT301 RBL Group04
+// Updated: Tích hợp SerpApi bypass Google Scholar CAPTCHA, chọn Nguồn và Auto-sync Query
 
 'use strict';
 
 // ============================================================
-// GLOBALS
+// CONFIG & GLOBALS
 // ============================================================
+
+/** Khóa SerpApi mặc định chạy ngầm */
+const HARDCODED_SERPAPI_KEY = "772f2da637b469a9b87553d1043e8dbc1716044d1bced4846f7d230fd9e7e167";
 
 /** Lưu toàn bộ kết quả scan gốc (chưa filter) */
 let allScanResults = [];
@@ -26,14 +30,9 @@ let onScanFinished = null;
 // REAL-TIME PROGRESS via chrome.storage.onChanged
 // ============================================================
 
-/**
- * Lắng nghe thay đổi scanProgress từ content script.
- * Content script ghi vào storage; popup cập nhật progress bar.
- */
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
 
-  // Kết quả cuối cùng do content script ghi vào storage
   if (changes.scanResults && changes.scanResults.newValue &&
       typeof onScanFinished === 'function') {
     onScanFinished(changes.scanResults.newValue);
@@ -50,13 +49,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (!label || !bar) return;
 
   const pct = p.totalPages > 0 ? Math.round((p.currentPage / p.totalPages) * 100) : 0;
-  bar.style.width = `${Math.min(pct, 99)}%`; // 99 – không đến 100 cho đến khi done
+  bar.style.width = `${Math.min(pct, 99)}%`;
   label.textContent = `Đang quét... Trang ${p.currentPage}/${p.totalPages} — ${p.papersFound} papers`;
 
   if (p.status === 'scanning') {
     sub.textContent = `Đang scroll trang ${p.currentPage} để load lazy content...`;
   } else if (p.status === 'extracted') {
     sub.textContent = `Đã extract trang ${p.currentPage}. ${p.papersFound} papers tích lũy.`;
+  } else if (p.status === 'blocked') {
+    sub.textContent = '⚠️ Google Scholar yêu cầu CAPTCHA – hãy giải CAPTCHA trong tab, scan sẽ tự tiếp tục.';
   } else if (p.status === 'done') {
     bar.style.width = '100%';
     label.textContent = `✅ Hoàn tất! ${p.papersFound} papers được quét.`;
@@ -70,26 +71,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-
-
 // ============================================================
 // HELPERS
 // ============================================================
 
-/**
- * Tạo paper ID dạng S001, S002...
- * @param {number} index - 0-based index
- * @param {string} [prefix='S'] - tiền tố
- */
 function generatePaperId(index, prefix = 'S') {
   return prefix + String(index + 1).padStart(3, '0');
 }
 
-/**
- * Tạo tên file từ metadata
- * @param {Object} metadata
- * @param {number} index - 1-based
- */
 function generateFileName(metadata, index) {
   const safeTitle = (metadata.title || 'unknown')
     .substring(0, 30)
@@ -99,11 +88,6 @@ function generateFileName(metadata, index) {
   return `${index}_${safeTitle}.pdf`;
 }
 
-/**
- * Chấm điểm mức độ liên quan (logic giống content.js, chạy ở popup context)
- * @param {Object} metadata
- * @returns {{ score: number, decision: string, matchedCriteria: string[] }}
- */
 function scoreRelevance(metadata) {
   let score = 0;
   const matchedCriteria = [];
@@ -112,46 +96,38 @@ function scoreRelevance(metadata) {
   const combined = titleLower + ' ' + abstractLower;
   const year = parseInt(metadata.year) || 0;
 
-  // IC-P: Java / unit test
   if (combined.includes('java') || combined.includes('unit test') || combined.includes('unit testing')) {
     score += 20;
     matchedCriteria.push('IC-P: Java/unit test (+20)');
   }
-  // IC-I: LLM / ChatGPT / Claude / GPT
   if (combined.includes('llm') || combined.includes('chatgpt') || combined.includes('claude') ||
       combined.includes('large language model') || combined.includes('gpt')) {
     score += 20;
     matchedCriteria.push('IC-I: LLM/ChatGPT/Claude (+20)');
   }
-  // IC-C: EvoSuite / comparison
   if (combined.includes('evosuite') || combined.includes('comparison') ||
       combined.includes('compare') || combined.includes('versus') || combined.includes('benchmark')) {
     score += 15;
     matchedCriteria.push('IC-C: Comparison/EvoSuite (+15)');
   }
-  // IC-O: coverage / compile / mutation / executable
   if (combined.includes('coverage') || combined.includes('compile') || combined.includes('compilation') ||
       combined.includes('mutation') || combined.includes('success rate') ||
       combined.includes('executable') || combined.includes('correctness')) {
     score += 15;
     matchedCriteria.push('IC-O: Coverage/compile/executable (+15)');
   }
-  // IC-T: Year >= 2018
   if (year >= 2018) {
     score += 10;
     matchedCriteria.push(`IC-T: Year ${year} >= 2018 (+10)`);
   }
-  // IC-L: Latin characters
   if (/[a-zA-Z]/.test(metadata.title || '')) {
     score += 10;
     matchedCriteria.push('IC-L: English/Latin (+10)');
   }
-  // IC-E: DOI available
   if (metadata.doi && metadata.doi.trim() !== '') {
     score += 10;
     matchedCriteria.push('IC-E: DOI available (+10)');
   }
-  // EC-N: survey / review (not SLR)
   const isSurveyOrReview =
     (combined.includes('survey') || combined.includes('review')) &&
     !combined.includes('systematic literature review');
@@ -159,7 +135,6 @@ function scoreRelevance(metadata) {
     score -= 50;
     matchedCriteria.push('EC-N: Survey/review → -50');
   }
-  // EC-Y: Year < 2018
   if (year > 0 && year < 2018) {
     score -= 100;
     matchedCriteria.push(`EC-Y: Year ${year} < 2018 → -100`);
@@ -170,17 +145,8 @@ function scoreRelevance(metadata) {
   return { score, decision, matchedCriteria };
 }
 
-/**
- * Tạo nội dung CSV từ mảng papers (với header)
- * @param {Array} papers - mảng { metadata, scored, id }
- * @param {string} searchString
- * @returns {string} CSV string
- */
 function buildCSV(papers, searchString = '') {
-  const safeStr = (str) => {
-    const s = String(str || '').replace(/"/g, '""');
-    return `"${s}"`;
-  };
+  const safeStr = (str) => `"${String(str || '').replace(/"/g, '""')}"`;
 
   const header = 'paper_id,file_name,title,authors,year,venue,doi,url,source,search_string,abstract,decision,score';
   const rows = papers.map((item, idx) => {
@@ -207,14 +173,8 @@ function buildCSV(papers, searchString = '') {
   return header + '\n' + rows.join('\n');
 }
 
-/**
- * Download chuỗi nội dung dạng file
- * @param {string} content
- * @param {string} filename
- * @param {string} mimeType
- */
 function downloadFile(content, filename, mimeType = 'text/csv;charset=utf-8;') {
-  const blob = new Blob(['\uFEFF' + content], { type: mimeType }); // BOM for Excel UTF-8
+  const blob = new Blob(['\uFEFF' + content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
@@ -226,16 +186,11 @@ function downloadFile(content, filename, mimeType = 'text/csv;charset=utf-8;') {
   URL.revokeObjectURL(url);
 }
 
-/**
- * Copy text vào clipboard
- * @param {string} text
- */
 async function copyToClipboard(text) {
   try {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // Fallback
     const el = document.createElement('textarea');
     el.value = text;
     el.style.position = 'absolute';
@@ -248,12 +203,6 @@ async function copyToClipboard(text) {
   }
 }
 
-/**
- * Hiển thị thông báo trạng thái
- * @param {string} id - id của element status
- * @param {string} msg
- * @param {'success'|'error'|'info'} type
- */
 function showStatus(id, msg, type = 'info') {
   const el = document.getElementById(id);
   if (!el) return;
@@ -263,14 +212,162 @@ function showStatus(id, msg, type = 'info') {
   setTimeout(() => el.classList.add('hidden'), 4000);
 }
 
-/**
- * Lấy score class cho màu sắc
- * @param {number} score
- */
 function getScoreClass(score) {
   if (score >= 70) return 'score-high';
   if (score >= 40) return 'score-mid';
   return 'score-low';
+}
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function truncate(str, maxLen) {
+  const s = String(str || '');
+  return s.length > maxLen ? s.substring(0, maxLen) + '…' : s;
+}
+
+// ============================================================
+// AUTO SYNC SEARCH QUERY FROM ACTIVE TAB
+// ============================================================
+
+async function syncSearchQueryFromActiveTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) return;
+
+    const url = new URL(tab.url);
+    let detectedQuery = '';
+
+    if (url.hostname.includes('dl.acm.org')) {
+      detectedQuery = url.searchParams.get('AllField') || url.searchParams.get('fillQuickSearch') || '';
+    } else if (url.hostname.includes('ieeexplore.ieee.org')) {
+      detectedQuery = url.searchParams.get('queryText') || '';
+    } else if (url.hostname.includes('scholar.google.com')) {
+      detectedQuery = url.searchParams.get('q') || '';
+    }
+
+    if (!detectedQuery && (url.hostname.includes('acm.org') || url.hostname.includes('ieee.org') || url.hostname.includes('scholar.google.com'))) {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const input = document.querySelector(
+            'input[name="AllField"], input[name="queryText"], input[name="q"], #gs_hdr_tsi, .search__field, input.query-field'
+          );
+          return input ? input.value : '';
+        }
+      }).catch(() => []);
+
+      if (results && results[0] && results[0].result) {
+        detectedQuery = results[0].result;
+      }
+    }
+
+    if (detectedQuery && detectedQuery.trim()) {
+      const queryEl = document.getElementById('search-string');
+      if (queryEl) {
+        queryEl.value = detectedQuery.trim();
+      }
+    }
+  } catch (err) {
+    console.warn('[Popup] Không thể tự động đồng bộ search query:', err);
+  }
+}
+
+// ============================================================
+// SERPAPI ENGINE INTEGRATION
+// ============================================================
+
+function parseSerpApiScholarItem(item) {
+  const title = (item.title || 'Unknown Title').replace(/\[(PDF\vert{}HTML\vert{}BOOK\vert{}CITATION)\]/gi, '').trim();
+  const url = item.link || '';
+  const abstract = item.snippet || '';
+
+  let authors = 'Unknown';
+  let year = 'Unknown';
+  let venue = 'Unknown';
+
+  if (item.publication_info && item.publication_info.summary) {
+    const summary = item.publication_info.summary;
+    const parts = summary.split(/\s+-\s+/);
+    if (parts.length > 0) {
+      authors = parts[0].replace(/…/g, '').trim();
+    }
+    const yearMatch = summary.match(/\b((?:19|20)\d{2})\b/);
+    if (yearMatch) {
+      year = yearMatch[1];
+    }
+    if (parts.length > 1) {
+      venue = parts[1].replace(/,?\s*(?:19|20)\d{2}/, '').replace(/…/g, '').trim() || 'Unknown';
+    }
+  }
+
+  const doiRegex = /10\.\d{4,}\/[^\s?#]+/;
+  const doiMatch = url.match(doiRegex) || abstract.match(doiRegex);
+  const doi = doiMatch ? doiMatch[0] : '';
+
+  return {
+    title,
+    authors,
+    year,
+    venue,
+    doi,
+    url,
+    abstract,
+    source: 'Google Scholar (SerpApi)'
+  };
+}
+
+async function fetchScholarViaSerpApi(query, apiKey, targetLimit, onProgressUpdate) {
+  const results = [];
+  const pageSize = 20; 
+  let currentStart = 0;
+  const totalPages = Math.ceil(targetLimit / pageSize);
+
+  while (results.length < targetLimit) {
+    const currentPage = Math.floor(currentStart / pageSize) + 1;
+    onProgressUpdate(currentPage, totalPages, results.length, 'Đang gửi request tới SerpApi...');
+
+    const endpoint = new URL('https://serpapi.com/search.json');
+    endpoint.searchParams.set('engine', 'google_scholar');
+    endpoint.searchParams.set('q', query);
+    endpoint.searchParams.set('start', String(currentStart));
+    endpoint.searchParams.set('num', String(pageSize));
+    endpoint.searchParams.set('api_key', apiKey);
+
+    const response = await fetch(endpoint.toString());
+    if (!response.ok) {
+      const errJson = await response.json().catch(() => null);
+      throw new Error(errJson?.error || `Lỗi HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    const organic = data.organic_results || [];
+
+    if (organic.length === 0) {
+      break;
+    }
+
+    for (const item of organic) {
+      results.push(parseSerpApiScholarItem(item));
+      if (results.length >= targetLimit) break;
+    }
+
+    onProgressUpdate(currentPage, totalPages, results.length, `Đã lấy xong trang ${currentPage}.`);
+
+    if (!data.serpapi_pagination || !data.serpapi_pagination.next) {
+      break;
+    }
+
+    currentStart += pageSize;
+    await new Promise(r => setTimeout(r, 300));
+  }
+
+  return results;
 }
 
 // ============================================================
@@ -291,9 +388,11 @@ function initTabs() {
       btn.classList.add('active');
       document.getElementById(target)?.classList.remove('hidden');
 
-      // Load history khi chuyển sang tab history
       if (target === 'tab-history') {
         loadHistory();
+      }
+      if (target === 'tab-scan') {
+        syncSearchQueryFromActiveTab();
       }
     });
   });
@@ -312,7 +411,6 @@ function initSinglePaper() {
 
   let currentMetadata = null;
 
-  // ---- Extract ----
   extractBtn.addEventListener('click', async () => {
     extractBtn.disabled = true;
     extractBtn.textContent = '⏳ Đang extract...';
@@ -321,12 +419,10 @@ function initSinglePaper() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-      // Inject content script nếu chưa có (cho các trang match)
       let response;
       try {
         response = await chrome.tabs.sendMessage(tab.id, { action: 'extractSingle' });
       } catch {
-        // Content script chưa load → inject thủ công
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
         await new Promise(r => setTimeout(r, 500));
         response = await chrome.tabs.sendMessage(tab.id, { action: 'extractSingle' });
@@ -339,7 +435,6 @@ function initSinglePaper() {
       currentMetadata = response.data;
       const scored = scoreRelevance(currentMetadata);
 
-      // Fill fields
       document.getElementById('f-title').value    = currentMetadata.title    || '';
       document.getElementById('f-authors').value  = currentMetadata.authors  || '';
       document.getElementById('f-year').value     = currentMetadata.year     || '';
@@ -349,7 +444,6 @@ function initSinglePaper() {
       document.getElementById('f-url').value      = currentMetadata.url      || '';
       document.getElementById('f-abstract').value = currentMetadata.abstract || '';
 
-      // Score display
       const scoreEl    = document.getElementById('single-score');
       const decisionEl = document.getElementById('single-decision');
       const criteriaEl = document.getElementById('single-criteria');
@@ -371,7 +465,6 @@ function initSinglePaper() {
     }
   });
 
-  // ---- Copy CSV ----
   copyCsvBtn.addEventListener('click', async () => {
     if (!currentMetadata) return;
     const scored = scoreRelevance(currentMetadata);
@@ -380,7 +473,6 @@ function initSinglePaper() {
     showStatus('extract-status', '📋 Đã copy CSV vào clipboard!', 'success');
   });
 
-  // ---- Copy Markdown ----
   copyMdBtn.addEventListener('click', async () => {
     if (!currentMetadata) return;
     const scored = scoreRelevance(currentMetadata);
@@ -400,7 +492,6 @@ function initSinglePaper() {
     showStatus('extract-status', '📝 Đã copy Markdown!', 'success');
   });
 
-  // ---- Save to Storage ----
   saveBtn.addEventListener('click', async () => {
     if (!currentMetadata) return;
     try {
@@ -426,10 +517,6 @@ function initSinglePaper() {
 // TAB 2: SEARCH SCANNER – DETAILED LIST HELPERS
 // ============================================================
 
-/**
- * Render danh sách chi tiết dạng card cho từng paper.
- * @param {Array} results - mảng { id, metadata, scored }
- */
 function renderDetailedList(results) {
   const listContainer = document.getElementById('detailed-list');
   if (!listContainer) return;
@@ -505,12 +592,7 @@ function renderDetailedList(results) {
   attachListEventListeners(results);
 }
 
-/**
- * Gắn event listeners cho các button trong detailed list.
- * @param {Array} results - mảng displayedResults hiện tại
- */
 function attachListEventListeners(results) {
-  // Copy link
   document.querySelectorAll('.btn-copy-link').forEach(btn => {
     btn.addEventListener('click', async () => {
       const url = btn.dataset.url;
@@ -525,7 +607,6 @@ function attachListEventListeners(results) {
     });
   });
 
-  // Tìm trên Google
   document.querySelectorAll('.btn-google').forEach(btn => {
     btn.addEventListener('click', () => {
       const title = btn.dataset.title;
@@ -535,13 +616,11 @@ function attachListEventListeners(results) {
     });
   });
 
-  // Toggle decision
   document.querySelectorAll('.btn-toggle-decision').forEach(btn => {
     btn.addEventListener('click', () => {
       const idx = parseInt(btn.dataset.listIdx);
       const item = results[idx];
       if (!item) return;
-      // Đổi decision trong memory
       if (item.scored.decision === 'INCLUDE') {
         item.scored.decision = 'EXCLUDE';
         item.scored.score = Math.max(0, item.scored.score - 70);
@@ -549,16 +628,11 @@ function attachListEventListeners(results) {
         item.scored.decision = 'INCLUDE';
         item.scored.score = Math.min(100, item.scored.score + 70);
       }
-      // Re-render chỉ card này
       renderDetailedList(results);
     });
   });
 }
 
-/**
- * Copy tất cả URL của papers vào clipboard.
- * @param {Array} results
- */
 async function copyAllLinks(results) {
   if (results.length === 0) { alert('Không có dữ liệu!'); return; }
   const links = results.map(r => r.metadata.url || '').filter(u => u).join('\n');
@@ -571,10 +645,6 @@ async function copyAllLinks(results) {
   }
 }
 
-/**
- * Copy danh sách chi tiết dạng text vào clipboard.
- * @param {Array} results
- */
 async function copyDetailedList(results) {
   if (results.length === 0) { alert('Không có dữ liệu!'); return; }
   const text = results.map((item, i) => {
@@ -620,7 +690,32 @@ function initSearchScanner() {
   const tbody           = document.getElementById('results-tbody');
   const masterCheck     = document.getElementById('master-check');
 
-  // ---- VIEW TOGGLE ----
+  const scanSerpBtn    = document.getElementById('scan-serpapi-btn');
+  const serpKeyInput   = document.getElementById('serpapi-key');
+  const serpLimitInput = document.getElementById('serpapi-limit');
+
+  // LOAD & SAVE CONFIG
+  chrome.storage.local.get(['serpapiKey', 'serpapiLimit'], (res) => {
+    if (serpKeyInput) {
+      serpKeyInput.value = res.serpapiKey || HARDCODED_SERPAPI_KEY;
+    }
+    if (res.serpapiLimit && serpLimitInput) {
+      serpLimitInput.value = res.serpapiLimit;
+    }
+  });
+
+  if (serpKeyInput) {
+    serpKeyInput.addEventListener('input', () => {
+      chrome.storage.local.set({ serpapiKey: serpKeyInput.value.trim() });
+    });
+  }
+  if (serpLimitInput) {
+    serpLimitInput.addEventListener('input', () => {
+      chrome.storage.local.set({ serpapiLimit: parseInt(serpLimitInput.value, 10) || 40 });
+    });
+  }
+
+  // VIEW TOGGLE
   document.getElementById('view-table-btn').addEventListener('click', () => {
     viewTableCont.classList.remove('hidden');
     viewListCont.classList.add('hidden');
@@ -635,7 +730,85 @@ function initSearchScanner() {
     renderDetailedList(displayedResults);
   });
 
-  // ---- SCAN ----
+  // ---- SCAN SERPAPI ----
+  if (scanSerpBtn) {
+    scanSerpBtn.addEventListener('click', async () => {
+      const apiKey = (serpKeyInput && serpKeyInput.value.trim()) || HARDCODED_SERPAPI_KEY;
+      if (!apiKey) {
+        alert('⚠️ Chưa cấu hình SerpApi Key!');
+        return;
+      }
+  
+      let query = document.getElementById('search-string').value.trim();
+      if (!query) {
+        alert('⚠️ Vui lòng nhập Search Query!');
+        return;
+      }
+
+      // Xử lý lọc theo nguồn
+      const sourceSelect = document.getElementById('serpapi-source');
+      const selectedSource = sourceSelect ? sourceSelect.value : 'all';
+      
+      const sourceMap = {
+        'acm': ' source:"ACM"',
+        'ieee': ' source:"IEEE"',
+        'semantic_scholar': ' source:"Semantic Scholar"',
+        'openalex_crossref': ' source:"Crossref"',
+        'pubmed': ' source:"PubMed"',
+        'embase': ' source:"Embase"',
+        'cochrane': ' source:"Cochrane"',
+        'wos': ' source:"Web of Science"',
+        'scopus': ' source:"Scopus"'
+      };
+
+      if (selectedSource !== 'all' && sourceMap[selectedSource]) {
+        query = `${query}${sourceMap[selectedSource]}`;
+      }
+  
+      const limit = parseInt(serpLimitInput?.value, 10) || 40;
+  
+      scanInProgress = true;
+      allScanResults = [];
+      displayedResults = [];
+      tbody.innerHTML = '';
+      scanSerpBtn.disabled = true;
+      if (scanBtn) scanBtn.disabled = true;
+      progressWrap.classList.remove('hidden');
+      filterSection.classList.add('hidden');
+      statsBox.classList.add('hidden');
+      tableActions.classList.add('hidden');
+      viewToggleBar.classList.add('hidden');
+      viewTableCont.classList.add('hidden');
+      viewListCont.classList.add('hidden');
+  
+      try {
+        const rawPapers = await fetchScholarViaSerpApi(
+          query,
+          apiKey,
+          limit,
+          (page, total, count, statusText) => {
+            const pct = Math.round((page / total) * 100);
+            progressBar.style.width = `${Math.min(pct, 95)}%`;
+            progressLabel.textContent = `Đang quét SerpApi... Trang ${page}/${total} — Đã tải ${count} bài`;
+            progressSub.textContent = statusText;
+          }
+        );
+  
+        showScanResults(rawPapers);
+        progressLabel.textContent = `✅ Hoàn tất! ${rawPapers.length} papers được quét.`;
+        progressBar.style.width = '100%';
+        progressSub.textContent = '';
+      } catch (err) {
+        console.error('[SerpApi] Lỗi thực thi:', err);
+        alert('❌ Lỗi SerpApi: ' + err.message);
+        progressWrap.classList.add('hidden');
+      } finally {
+        resetScanButton();
+      }
+    });
+  }
+
+  // ---- SCAN DOM ----
   scanBtn.addEventListener('click', async () => {
     if (scanInProgress) {
       alert('⏳ Scan đang chạy. Vui lòng chờ...');
@@ -645,18 +818,25 @@ function initSearchScanner() {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-      // Kiểm tra đúng trang search
-      if (!tab.url || !tab.url.includes('/action/doSearch')) {
-        alert('⚠️ Vui lòng mở trang search ACM trước!\n\nURL phải chứa: dl.acm.org/action/doSearch');
+      const tabUrl = tab.url || '';
+      const isSupportedSearch =
+        tabUrl.includes('dl.acm.org/action/doSearch') ||
+        tabUrl.includes('ieeexplore.ieee.org/search/searchresult.jsp') ||
+        tabUrl.includes('scholar.google.com/scholar?');
+      if (!isSupportedSearch) {
+        alert('⚠️ Vui lòng mở trang kết quả tìm kiếm trước!\n\nHỗ trợ:\n' +
+              '• ACM: dl.acm.org/action/doSearch\n' +
+              '• IEEE Xplore: ieeexplore.ieee.org/search/searchresult.jsp\n' +
+              '• Google Scholar: scholar.google.com/scholar?...');
         return;
       }
 
-      // Reset UI
       scanInProgress = true;
       allScanResults = [];
       displayedResults = [];
       tbody.innerHTML = '';
       scanBtn.disabled = true;
+      if (scanSerpBtn) scanSerpBtn.disabled = true;
       scanBtn.textContent = '⏳ Đang quét tất cả trang...';
       progressWrap.classList.remove('hidden');
       filterSection.classList.add('hidden');
@@ -666,17 +846,14 @@ function initSearchScanner() {
       viewTableCont.classList.add('hidden');
       viewListCont.classList.add('hidden');
 
-      // Xóa progress cũ trong storage
       await chrome.storage.local.remove('scanProgress');
 
-      // Cập nhật UI ban đầu
       progressLabel.textContent  = '🔍 Đang kết nối content script...';
       progressSub.textContent    = 'Đang chuẩn bị quét toàn bộ trang kết quả...';
       progressBar.style.width    = '2%';
       const detailEl = document.getElementById('progress-page-detail');
       if (detailEl) detailEl.textContent = '';
 
-      // Inject content script nếu cần
       try {
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
       } catch { /* already injected */ }
@@ -685,8 +862,6 @@ function initSearchScanner() {
       progressLabel.textContent = '🚀 Bắt đầu scan – đang chờ content script...';
       progressBar.style.width   = '5%';
 
-      // Chỉ gửi lệnh BẮT ĐẦU – content script trả lời ngay.
-      // Kết quả đến qua chrome.storage.onChanged (onScanFinished).
       let response;
       try {
         response = await chrome.tabs.sendMessage(tab.id, { action: 'scanSearch' });
@@ -709,11 +884,16 @@ function initSearchScanner() {
 
   function resetScanButton() {
     scanInProgress = false;
-    scanBtn.disabled = false;
-    scanBtn.textContent = '🚀 Scan All Results (All Pages)';
+    if (scanBtn) {
+      scanBtn.disabled = false;
+      scanBtn.textContent = '🌐 Quét Tab DOM';
+    }
+    if (scanSerpBtn) {
+      scanSerpBtn.disabled = false;
+      scanSerpBtn.textContent = '⚡ Quét Scholar bằng SerpApi';
+    }
   }
 
-  /** Chấm điểm + hiển thị danh sách paper đã quét */
   function showScanResults(rawResults) {
     progressLabel.textContent = `⚙️ Đang chấm điểm IC/EC cho ${rawResults.length} papers...`;
     progressBar.style.width   = '95%';
@@ -744,7 +924,6 @@ function initSearchScanner() {
     document.getElementById('view-list-btn').classList.remove('active');
   }
 
-  // Content script ghi scanResults -> popup nhận ở đây
   onScanFinished = (res) => {
     if (res.status === 'error') {
       alert('❌ Lỗi khi scan: ' + (res.error || 'unknown'));
@@ -758,15 +937,17 @@ function initSearchScanner() {
     setTimeout(() => progressWrap.classList.add('hidden'), 4000);
   };
 
-  // Mở lại popup giữa chừng: khôi phục trạng thái (scan đang chạy / đã xong)
   (async () => {
     try {
       const { scanState, scanResults } = await chrome.storage.local.get(['scanState', 'scanResults']);
       const fresh = scanState?.active && (Date.now() - (scanState.updatedAt || 0) < 3 * 60 * 1000);
       if (fresh) {
         scanInProgress = true;
-        scanBtn.disabled = true;
-        scanBtn.textContent = '⏳ Đang quét tất cả trang...';
+        if (scanBtn) {
+          scanBtn.disabled = true;
+          scanBtn.textContent = '⏳ Đang quét tất cả trang...';
+        }
+        if (scanSerpBtn) scanSerpBtn.disabled = true;
         progressWrap.classList.remove('hidden');
         progressLabel.textContent = `Đang quét... Trang ${scanState.page + 1} — ${scanState.papers?.length || 0} papers`;
       } else if (scanResults && scanResults.status === 'completed' &&
@@ -782,7 +963,6 @@ function initSearchScanner() {
     progressLabel.textContent = `Đang quét... ${count} papers`;
     progressSub.textContent   = sub;
   }
-
 
   // ---- RENDER TABLE ----
   function renderTable(results) {
@@ -819,24 +999,10 @@ function initSearchScanner() {
       tbody.appendChild(tr);
     });
 
-    // Update selected count on check change
     tbody.querySelectorAll('.row-check').forEach(cb => {
       cb.addEventListener('change', updateSelectedCount);
     });
     updateSelectedCount();
-  }
-
-  function escapeHtml(str) {
-    return String(str || '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  function truncate(str, maxLen) {
-    const s = String(str || '');
-    return s.length > maxLen ? s.substring(0, maxLen) + '…' : s;
   }
 
   function updateStats(results) {
@@ -854,7 +1020,6 @@ function initSearchScanner() {
     document.getElementById('stat-selected').textContent = `Đã chọn: ${checked}`;
   }
 
-  // ---- MASTER CHECKBOX ----
   masterCheck.addEventListener('change', () => {
     tbody.querySelectorAll('.row-check').forEach(cb => {
       cb.checked = masterCheck.checked;
@@ -862,7 +1027,6 @@ function initSearchScanner() {
     updateSelectedCount();
   });
 
-  // ---- SELECT ALL INCLUDE ----
   document.getElementById('select-all-include-btn').addEventListener('click', () => {
     tbody.querySelectorAll('.row-check').forEach(cb => {
       const idx = parseInt(cb.dataset.idx);
@@ -872,14 +1036,12 @@ function initSearchScanner() {
     updateSelectedCount();
   });
 
-  // ---- DESELECT ALL ----
   document.getElementById('deselect-all-btn').addEventListener('click', () => {
     tbody.querySelectorAll('.row-check').forEach(cb => { cb.checked = false; });
     masterCheck.checked = false;
     updateSelectedCount();
   });
 
-  // ---- EXPORT SELECTED CSV ----
   document.getElementById('export-selected-btn').addEventListener('click', () => {
     const selected = [];
     tbody.querySelectorAll('.row-check:checked').forEach(cb => {
@@ -892,7 +1054,6 @@ function initSearchScanner() {
     downloadFile(csv, `slr_selected_${Date.now()}.csv`);
   });
 
-  // ---- EXPORT ALL CSV ----
   document.getElementById('export-all-btn').addEventListener('click', () => {
     if (displayedResults.length === 0) { alert('Không có dữ liệu!'); return; }
     const searchStr = document.getElementById('search-string').value;
@@ -900,17 +1061,14 @@ function initSearchScanner() {
     downloadFile(csv, `slr_all_${Date.now()}.csv`);
   });
 
-  // ---- COPY ALL LINKS ----
   document.getElementById('copy-all-links-btn').addEventListener('click', () => {
     copyAllLinks(displayedResults);
   });
 
-  // ---- COPY DETAILED LIST ----
   document.getElementById('copy-detailed-list-btn').addEventListener('click', () => {
     copyDetailedList(displayedResults);
   });
 
-  // ---- CLEAR RESULTS ----
   document.getElementById('clear-results-btn').addEventListener('click', () => {
     if (!confirm('Xóa toàn bộ kết quả scan?')) return;
     allScanResults = [];
@@ -925,23 +1083,19 @@ function initSearchScanner() {
     viewListCont.classList.add('hidden');
   });
 
-
-  // ---- FILTER ----
   document.getElementById('apply-filter-btn').addEventListener('click', applyFilter);
   document.getElementById('filter-keyword').addEventListener('keyup', e => {
     if (e.key === 'Enter') applyFilter();
   });
 
-  // ---- ONLY INCLUDE CHECKBOX ----
-  // Click this checkbox → re-run filter instantly without touching other controls
   document.getElementById('only-include-checkbox')?.addEventListener('change', applyFilter);
 
   function applyFilter() {
-    const minYear    = parseInt(document.getElementById('filter-min-year').value)  || 0;
-    const maxYear    = parseInt(document.getElementById('filter-max-year').value)  || 9999;
-    const minScore   = parseInt(document.getElementById('filter-min-score').value) || 0;
-    const keyword    = document.getElementById('filter-keyword').value.toLowerCase().trim();
-    const decisionF  = document.getElementById('filter-decision').value;
+    const minYear     = parseInt(document.getElementById('filter-min-year').value)  || 0;
+    const maxYear     = parseInt(document.getElementById('filter-max-year').value)  || 9999;
+    const minScore    = parseInt(document.getElementById('filter-min-score').value) || 0;
+    const keyword     = document.getElementById('filter-keyword').value.toLowerCase().trim();
+    const decisionF   = document.getElementById('filter-decision').value;
     const onlyInclude = document.getElementById('only-include-checkbox')?.checked ?? false;
 
     displayedResults = allScanResults.filter(item => {
@@ -950,9 +1104,7 @@ function initSearchScanner() {
       const year = parseInt(m.year) || 0;
       const titleLower = (m.title || '').toLowerCase();
 
-      // Quick filter: chỉ INCLUDE
       if (onlyInclude && s.decision !== 'INCLUDE') return false;
-
       if (year > 0 && (year < minYear || year > maxYear)) return false;
       if (s.score < minScore) return false;
       if (keyword && !titleLower.includes(keyword)) return false;
@@ -963,13 +1115,11 @@ function initSearchScanner() {
     renderTable(displayedResults);
     updateStats(displayedResults);
 
-    // Re-render danh sách chi tiết nếu đang hiển thị
     if (!viewListCont.classList.contains('hidden')) {
       renderDetailedList(displayedResults);
     }
   }
 
-  // ---- SORT (click on th) ----
   document.querySelectorAll('#results-table th.sortable').forEach(th => {
     th.addEventListener('click', () => {
       const col = th.dataset.col;
@@ -1023,7 +1173,6 @@ async function loadHistory() {
       return;
     }
 
-    // Hiển thị theo thứ tự ngược (mới nhất trước)
     [...papers].reverse().forEach(entry => {
       const m = entry.metadata;
       const s = entry.scored;
@@ -1045,14 +1194,6 @@ async function loadHistory() {
     console.error('[Popup] loadHistory error:', err);
     historyStats.textContent = '❌ Lỗi khi tải history.';
   }
-}
-
-function escapeHtml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 function initHistory() {
@@ -1081,5 +1222,6 @@ document.addEventListener('DOMContentLoaded', () => {
   initSinglePaper();
   initSearchScanner();
   initHistory();
+  syncSearchQueryFromActiveTab();
   console.log('[SLR Scanner Popup] Ready!');
 });
