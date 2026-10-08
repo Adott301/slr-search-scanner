@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-
+ 
   <!-- ===== HEADER ===== -->
   <header class="header">
     <div class="header-icon">🔬</div>
@@ -16,14 +16,14 @@
       <span class="header-sub">SWT301 · RBL Group04 · FA26</span>
     </div>
   </header>
-
+ 
   <!-- ===== TABS ===== -->
   <div class="tabs">
     <button class="tab-btn active" data-tab="tab-single">📄 Single Paper</button>
     <button class="tab-btn" data-tab="tab-scan">🔍 Search Scanner</button>
     <button class="tab-btn" data-tab="tab-history">💾 History</button>
   </div>
-
+ 
   <!-- ====================================================
        TAB 1: SINGLE PAPER
   ===================================================== -->
@@ -33,11 +33,11 @@
       <button id="extract-btn" class="btn btn-primary btn-full">🔍 Extract từ trang hiện tại</button>
       <div id="extract-status" class="status-msg hidden"></div>
     </div>
-
+ 
     <!-- Kết quả metadata -->
     <div id="single-result" class="section hidden">
       <h2 class="section-title">📋 Kết quả</h2>
-
+ 
       <div class="field-group">
         <label>Title</label>
         <textarea id="f-title" rows="2" readonly></textarea>
@@ -72,14 +72,14 @@
         <label>Abstract</label>
         <textarea id="f-abstract" rows="3" readonly></textarea>
       </div>
-
+ 
       <!-- Score -->
       <div class="score-box" id="single-score-box">
         <div class="score-value" id="single-score">—</div>
         <div class="score-decision" id="single-decision">—</div>
         <div class="score-criteria" id="single-criteria"></div>
       </div>
-
+ 
       <!-- Actions -->
       <div class="action-group">
         <button id="copy-csv-btn" class="btn btn-success">📋 Copy CSV</button>
@@ -88,20 +88,51 @@
       </div>
     </div>
   </div>
-
+ 
   <!-- ====================================================
-       TAB 2: SEARCH SCANNER
+       TAB 2: SEARCH SCANNER (Updated with SerpApi Support)
   ===================================================== -->
   <div id="tab-scan" class="tab-content hidden">
 
-    <!-- Search String -->
-    <div class="section">
-      <label class="field-label">Search String (để tham khảo)</label>
-      <textarea id="search-string" rows="2">("Defects4J" OR "Java test generation") AND ("LLM" OR "ChatGPT" OR "Claude") AND ("JUnit" OR "unit test")</textarea>
-      <p class="hint">Mở trang search ACM với query trên, sau đó bấm Scan.<br>Tool sẽ tự động chuyển trang để quét HẾT kết quả.</p>
-      <button id="scan-btn" class="btn btn-primary btn-full">🚀 Scan All Results (All Pages)</button>
+    <!-- Cấu hình SerpApi -->
+   <div class="section">
+      <h2 class="section-title">⚡ Cấu hình quét SerpApi</h2>
+      <div class="field-row">
+        <div class="field-group">
+          <label>Giới hạn Papers</label>
+          <input type="number" id="serpapi-limit" value="40" min="10" max="200" step="10" />
+        </div>
+        <div class="field-group">
+          <label>Nguồn quét (Database)</label>
+          <select id="serpapi-source">
+            <option value="all">Google Scholar (Tổng hợp)</option>
+            <option value="acm">ACM Digital Library</option>
+            <option value="ieee">IEEE Xplore</option>
+            <option value="semantic_scholar">Semantic Scholar</option>
+            <option value="openalex_crossref">OpenAlex / Crossref</option>
+            <option value="pubmed">PubMed</option>
+            <option value="embase">Embase</option>
+            <option value="cochrane">Cochrane Central Register</option>
+            <option value="wos">Web of Science Core Collection</option>
+            <option value="scopus">Scopus</option>
+          </select>
+        </div>
+      </div>
     </div>
-
+ 
+    <!-- Search String & Trigger Buttons -->
+   <!-- Search String & Trigger Buttons -->
+    <div class="section">
+      <label class="field-label">Search Query (Tự động đồng bộ từ trang web)</label>
+      <textarea id="search-string" rows="2" placeholder="Đang lấy query từ trang hiện tại..."></textarea>
+      <p class="hint">Mở trang kết quả tìm kiếm nếu dùng "Quét Tab DOM", hoặc dùng "SerpApi" để quét ngầm toàn bộ trên Google Scholar.</p>
+      
+      <div class="action-group" style="margin-top: 8px;">
+        <button id="scan-serpapi-btn" class="btn btn-success" style="flex: 2;">⚡ Quét Scholar bằng SerpApi</button>
+        <button id="scan-btn" class="btn btn-secondary" style="flex: 1;" title="Quét DOM từ tab trình duyệt đang mở">🌐 Quét Tab DOM</button>
+      </div>
+    </div>
+ 
     <!-- Progress – real-time pagination tracker -->
     <div id="scan-progress-wrap" class="section hidden">
       <div class="progress-label" id="progress-label">Đang khởi động...</div>
@@ -111,11 +142,11 @@
       <div class="progress-sub" id="progress-sub">Đang chuẩn bị scan toàn bộ trang...</div>
       <div class="progress-page-detail" id="progress-page-detail"></div>
     </div>
-
+ 
     <!-- Filters -->
     <div id="filter-section" class="section hidden">
       <h2 class="section-title">🎛️ Bộ lọc</h2>
-
+ 
       <!-- Quick filter: chỉ hiển thị INCLUDE -->
       <div class="filter-row-checkbox">
         <label class="checkbox-label">
@@ -123,7 +154,7 @@
           ⚡ Chỉ hiển thị INCLUDE (score ≥ 70)
         </label>
       </div>
-
+ 
       <div class="filter-grid">
         <div class="field-group">
           <label>Min Year</label>
@@ -152,7 +183,7 @@
       </div>
       <button id="apply-filter-btn" class="btn btn-secondary btn-full">🔄 Áp dụng bộ lọc</button>
     </div>
-
+ 
     <!-- Statistics -->
     <div id="stats-box" class="stats-box hidden">
       <span id="stat-total">Tổng: 0</span>
@@ -163,7 +194,7 @@
       <span class="stat-sep">|</span>
       <span id="stat-selected">Đã chọn: 0</span>
     </div>
-
+ 
     <!-- Action buttons for table -->
     <div id="table-actions" class="action-group hidden">
       <button id="select-all-include-btn" class="btn btn-success">✅ Select All INCLUDE</button>
@@ -174,13 +205,13 @@
       <button id="copy-detailed-list-btn" class="btn btn-success">📋 Copy danh sách chi tiết</button>
       <button id="clear-results-btn" class="btn btn-danger">🗑️ Clear Results</button>
     </div>
-
+ 
     <!-- View Toggle Bar -->
     <div id="view-toggle-bar" class="view-toggle-bar hidden">
       <button id="view-table-btn" class="view-btn active">📊 Bảng</button>
       <button id="view-list-btn" class="view-btn">📋 Danh sách chi tiết</button>
     </div>
-
+ 
     <!-- View: Table -->
     <div id="view-table-container" class="hidden">
       <div class="table-scroll">
@@ -203,14 +234,14 @@
         </table>
       </div>
     </div>
-
+ 
     <!-- View: Danh sách chi tiết -->
     <div id="view-list-container" class="hidden">
       <div id="detailed-list"></div>
     </div>
-
+ 
   </div>
-
+ 
   <!-- ====================================================
        TAB 3: HISTORY
   ===================================================== -->
@@ -227,12 +258,12 @@
       </div>
     </div>
   </div>
-
+ 
   <!-- ===== FOOTER ===== -->
   <footer class="footer">
-    SWT301 · RBL Group04 · FA26 &nbsp;|&nbsp; v1.0.0
+    SWT301 · RBL Group04 · FA26 &nbsp;|&nbsp; v1.1.0
   </footer>
-
+ 
   <script src="popup.js"></script>
 </body>
 </html>
