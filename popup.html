@@ -90,25 +90,30 @@
   </div>
  
   <!-- ====================================================
-       TAB 2: SEARCH SCANNER (Updated with SerpApi Support)
+       TAB 2: SEARCH SCANNER (SerpApi multi-source)
   ===================================================== -->
   <div id="tab-scan" class="tab-content hidden">
 
     <!-- Cấu hình SerpApi -->
-   <div class="section">
+    <div class="section">
       <h2 class="section-title">⚡ Cấu hình quét SerpApi</h2>
       <div class="field-row">
         <div class="field-group">
-          <label>Giới hạn Papers</label>
-          <input type="number" id="serpapi-limit" value="40" min="10" max="200" step="10" />
+          <label>Số bài mỗi lần quét</label>
+          <input type="number" id="serpapi-limit" value="500" min="10" max="1000" step="10" />
         </div>
         <div class="field-group">
           <label>Nguồn quét (Database)</label>
           <select id="serpapi-source">
             <option value="all">Google Scholar (Tổng hợp)</option>
+            <option value="all_google">Tất cả (Google Search)</option>
             <option value="acm">ACM Digital Library</option>
             <option value="ieee">IEEE Xplore</option>
+            <option value="springer">Springer Link</option>
+            <option value="sciencedirect">ScienceDirect</option>
+            <option value="arxiv">arXiv</option>
             <option value="semantic_scholar">Semantic Scholar</option>
+            <option value="dblp">DBLP</option>
             <option value="openalex_crossref">OpenAlex / Crossref</option>
             <option value="pubmed">PubMed</option>
             <option value="embase">Embase</option>
@@ -121,16 +126,22 @@
     </div>
  
     <!-- Search String & Trigger Buttons -->
-   <!-- Search String & Trigger Buttons -->
     <div class="section">
       <label class="field-label">Search Query (Tự động đồng bộ từ trang web)</label>
       <textarea id="search-string" rows="2" placeholder="Đang lấy query từ trang hiện tại..."></textarea>
-      <p class="hint">Mở trang kết quả tìm kiếm nếu dùng "Quét Tab DOM", hoặc dùng "SerpApi" để quét ngầm toàn bộ trên Google Scholar.</p>
+      <p class="hint">Mở trang kết quả tìm kiếm nếu dùng "Quét Tab DOM", hoặc dùng "SerpApi" để quét ngầm theo nguồn đã chọn (Google Scholar hoặc Google Search với site:).</p>
       
+      <label class="checkbox-label" style="margin-top: 6px;">
+        <input type="checkbox" id="enrich-checkbox" checked />
+        🧬 Làm giàu metadata (abstract, tác giả, venue, DOI) qua Semantic Scholar / OpenAlex
+      </label>
+
       <div class="action-group" style="margin-top: 8px;">
-        <button id="scan-serpapi-btn" class="btn btn-success" style="flex: 2;">⚡ Quét Scholar bằng SerpApi</button>
+        <button id="scan-serpapi-btn" class="btn btn-success" style="flex: 2;">⚡ Quét Google Scholar bằng SerpApi</button>
+        <button id="scan-continue-btn" class="btn btn-primary hidden" style="flex: 2;" title="Quét tiếp từ trang đã dừng và gộp với kết quả trước">➕ Quét tiếp</button>
         <button id="scan-btn" class="btn btn-secondary" style="flex: 1;" title="Quét DOM từ tab trình duyệt đang mở">🌐 Quét Tab DOM</button>
       </div>
+      <p id="serpapi-state-info" class="hint hidden" style="margin-top: 6px;"></p>
     </div>
  
     <!-- Progress – real-time pagination tracker -->
